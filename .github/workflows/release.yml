@@ -5,6 +5,22 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: '是否创建 GitHub Release'
+        required: true
+        type: boolean
+        default: true
+      tag_name:
+        description: 'Release 的 Tag 名称（留空则自动从 package.json 读取版本号，如 v0.5.4）'
+        required: false
+        type: string
+        default: ''
+      prerelease:
+        description: '是否标记为预发布 (Pre-release)'
+        required: false
+        type: boolean
+        default: false
 
 env:
   CI: true
@@ -163,11 +179,36 @@ jobs:
     name: Create GitHub Release
     needs: build-and-package
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
     permissions:
       contents: write
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Determine release tag name
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger: use input tag name or extract from package.json
+            INPUT_TAG="${{ inputs.tag_name }}"
+            if [[ -n "$INPUT_TAG" ]]; then
+              TAG_NAME="$INPUT_TAG"
+            else
+              VERSION=$(node -p "require('./package.json').version")
+              TAG_NAME="v${VERSION}"
+            fi
+            echo "is_prerelease=${{ inputs.prerelease }}" >> $GITHUB_OUTPUT
+          else
+            # Tag push: extract tag from ref
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "Determined tag name: ${TAG_NAME}"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -189,6 +230,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          target_commitish: ${{ github.sha }}
           files: release/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          prerelease: ${{ steps.tag.outputs.is_prerelease }}
